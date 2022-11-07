@@ -1,0 +1,3 @@
+[submodule "vendor/coyote-ecs"]
+	path = vendor/coyote-ecs
+	url = https://github.com/linuxy/coyote-ecs.git
