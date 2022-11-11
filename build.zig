@@ -8,6 +8,9 @@ pub fn build(b: *std.build.Builder) void {
     const exe = b.addExecutable("snake", "src/snake.zig");
     exe.setBuildMode(mode);
     exe.linkLibC();
+    exe.addIncludePath("/usr/include");
+    exe.addIncludePath("/usr/include/x86_64-linux-gnu");
+    exe.linkSystemLibrary("SDL2");
     exe.addPackage(ecsPkg);
     exe.install();
 
