@@ -93,6 +93,61 @@ pub const Game = struct {
     }
 };
 
+pub const GameObject = struct {
+
+    x: f32,
+    y: f32,
+    last_update: f64,
+    time_delta: f64,
+    children: std.ArrayList(GameObject),
+    texture: []const u8,
+
+    pub fn init(name: []const u8, x: f32, y: f32) *GameObject {
+        var self = allocator.create(GameObject);
+        self.x = x;
+        self.y = y;
+        self.texture = name;
+        self.children.init(allocator);
+        return self;
+    }
+
+    pub fn addChild(self: *GameObject, other: *GameObject) !void {
+        try self.children.append(other);
+    }
+
+    pub fn distanceTo(self: *GameObject, x: f32, y: f32) f32 {
+        return @sqrt((self.x - x)^2 + (self.y - y)^2);
+    }
+
+    pub fn distanceToObject(self: *GameObject, other: *GameObject) f32 {
+        _ = self;
+        return distanceTo(other.x, other.y);
+    }
+
+    pub fn render(self: *GameObject, game: *Game) void {
+        for(self.children.items) |child| {
+            child.render();
+        }
+        game.tileMap.render(self.texture, self.x, self.y);
+    }
+
+    pub fn update(self: *GameObject) void {
+        if(self.last_update == 0) {
+            self.last_update = c.SDL_GetTicks();
+        }
+
+        for(self.children.items) |child| {
+            child.update();
+        }
+
+        var current_time = c.SDL_GetTicks();
+        self.time_delta = (current_time - self.last_update) / 1000.0;
+        self.last_update = current_time;
+    }
+
+
+};
+
 pub const Player = struct {
     speed: u32 = 128,
     last_node: *TailNode,

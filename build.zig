@@ -8,8 +8,12 @@ pub fn build(b: *std.build.Builder) void {
     const exe = b.addExecutable("snake", "src/snake.zig");
     exe.setBuildMode(mode);
     exe.linkLibC();
+    //Linux paths
     exe.addIncludePath("/usr/include");
     exe.addIncludePath("/usr/include/x86_64-linux-gnu");
+    //Homebrew OSX paths
+    exe.addIncludePath("/opt/homebrew/Cellar/sdl2/2.24.2/include");
+    exe.addLibraryPath("/opt/homebrew/Cellar/sdl2/2.24.2/lib");
     exe.linkSystemLibrary("SDL2");
     exe.addPackage(ecsPkg);
     exe.install();
