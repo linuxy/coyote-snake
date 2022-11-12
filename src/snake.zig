@@ -19,6 +19,7 @@ pub fn main() !void {
 
     while(game.isRunning) {
         game.handleEvents();
+        game.update();
         try game.render();
         c.SDL_Delay(17);
     }
@@ -74,7 +75,7 @@ pub const Game = struct {
     }
 
     pub fn update(self: *Game) void {
-        self.player.update();
+        self.player.?.update();
     }
 
     pub fn handleEvents(self: *Game) void {
@@ -102,19 +103,20 @@ pub const Game = struct {
 
 pub const GameObject = struct {
 
-    x: f32,
-    y: f32,
-    last_update: f64,
+    x: f64,
+    y: f64,
+    last_update: u32 = 0,
     time_delta: f64,
     children: std.ArrayList(*GameObject),
     texture: []const u8,
 
-    pub fn init(name: []const u8, x: f32, y: f32) !*GameObject {
+    pub fn init(name: []const u8, x: f64, y: f64) !*GameObject {
         var self = try allocator.create(GameObject);
         self.x = x;
         self.y = y;
         self.texture = name;
         self.children = std.ArrayList(*GameObject).init(allocator);
+        self.last_update = 0;
         return self;
     }
 
@@ -122,13 +124,12 @@ pub const GameObject = struct {
         try self.children.append(other);
     }
 
-    pub fn distanceTo(self: *GameObject, x: f32, y: f32) f32 {
-        return @sqrt((self.x - x)^2 + (self.y - y)^2);
+    pub fn distanceTo(self: *GameObject, x: f64, y: f64) f64 {
+        return @sqrt(@exp2(self.x - x)) + @exp2((self.y - y));
     }
 
-    pub fn distanceToObject(self: *GameObject, other: *GameObject) f32 {
-        _ = self;
-        return distanceTo(other.x, other.y);
+    pub fn distanceToObject(self: *GameObject, other: *GameObject) f64 {
+        return self.distanceTo(other.x, other.y);
     }
 
     pub fn render(self: *GameObject, game: *Game) !void {
@@ -141,6 +142,7 @@ pub const GameObject = struct {
     pub fn update(self: *GameObject) void {
         if(self.last_update == 0) {
             self.last_update = c.SDL_GetTicks();
+            std.log.info("0 {}", .{self.last_update});
         }
 
         for(self.children.items) |child| {
@@ -148,7 +150,8 @@ pub const GameObject = struct {
         }
 
         var current_time = c.SDL_GetTicks();
-        self.time_delta = (current_time - self.last_update) / 1000.0;
+        std.log.info("{} : {}", .{current_time, self.last_update});
+        self.time_delta = @intToFloat(f64, current_time - self.last_update) / 1000.0;
         self.last_update = current_time;
     }
 };
@@ -161,7 +164,7 @@ pub const Player = struct {
 
     parent: *GameObject,
     
-    pub fn init(x: f32, y: f32) !*Player {
+    pub fn init(x: f64, y: f64) !*Player {
         var self = try allocator.create(Player);
         var parent = try GameObject.init("snake_head", x, y);
         self.parent = parent;
@@ -170,20 +173,28 @@ pub const Player = struct {
         return self;
     }
 
-    pub fn update(self: *Player, parent: *GameObject) void {
-        parent.update();
-        var speed_delta = self.speed * parent.time_delta;
-        self.next_node.speed_delta = speed_delta;
+    pub fn update(self: *Player) void {
+        self.parent.update();
+        var speed_delta = @intToFloat(f64, self.speed) * self.parent.time_delta;
+        self.next_node.?.speed_delta = speed_delta;
         switch(self.direction) {
-            .U => { self.y -= speed_delta; },
-            .D => { self.y += speed_delta; },
-            .L => { self.x -= speed_delta; },
-            .R => { self.x += speed_delta; },
-            else => {},
+            .U => { self.parent.y -= speed_delta; },
+            .D => { self.parent.y += speed_delta; },
+            .L => { self.parent.x -= speed_delta; },
+            .R => { self.parent.x += speed_delta; },
         }
 
-        if(parent.next_node.collidesWith(parent, 0)) {
+        if(self.next_node.?.collidesWith(self.parent, 0)) {
             self.speed = 0;
+        }
+
+        if(!(self.next_node.?.path.len == 0)) {
+            var last_path = self.next_node.?.path.last.?.data;
+            if(self.parent.distanceTo(last_path.x, last_path.y) > speed_delta)
+                try self.next_node.?.addPath(PathPoint{.x = self.parent.x, .y = self.parent.y});
+        } else {
+            if(self.parent.distanceTo(self.next_node.?.parent.x, self.next_node.?.parent.y) > speed_delta)
+                try self.next_node.?.addPath(PathPoint{.x = self.parent.x, .y = self.parent.y});
         }
     }
 
@@ -234,14 +245,50 @@ pub const Player = struct {
 };
 
 pub const PathPoint = struct {
-    x: f32,
-    y: f32,
+    x: f64,
+    y: f64,
 };
 
 pub const TailNode = struct {
     in_motion: bool = false,
-    speed_delta: f32 = 0,
-    next_node: *TailNode,
+    speed_delta: f64 = 0,
+    next_node: ?*TailNode,
+    node_number: u32,
+    path: *std.TailQueue(*PathPoint),
+
+    parent: *GameObject,
+
+    pub fn addTo(self: *TailNode, parent: *GameObject) !void {
+        _ = self;
+        _ = parent;
+    }
+
+    pub fn addPath(self: *TailNode, path_point: PathPoint) !void {
+        _ = self;
+        _ = path_point;
+    }
+
+    pub fn collidesWith(self: *TailNode, other: *GameObject, node_number: u32) bool {
+        if(!self.in_motion)
+            return false;
+
+        if(self.node_number > 10 and self.parent.distanceToObject(other) < 16)
+            return true;
+
+        if(self.next_node != null)
+            return self.collidesWith(other, node_number + 1);
+
+        return false;
+    }
+
+    pub fn update(self: *TailNode) void {
+        self.parent.update();
+    }
+
+    pub fn moveTowards(self: *TailNode, target: *PathPoint) f64 {
+        _ = self;
+        _ = target;
+    }
 };
 
 pub const TileMap = struct {
