@@ -12,6 +12,7 @@ const Systems = ecs.Systems;
 const allocator = std.heap.c_allocator;
 const SCREEN_WIDTH = 800;
 const SCREEN_HEIGHT = 600;
+const MAX_DIST = 4;
 
 pub fn main() !void {
     var game = try Game.init();
@@ -19,7 +20,7 @@ pub fn main() !void {
 
     while(game.isRunning) {
         game.handleEvents();
-        game.update();
+        try game.update();
         try game.render();
         c.SDL_Delay(17);
     }
@@ -60,7 +61,13 @@ pub const Game = struct {
         try self.tileMap.?.addTile("assets/images/grass.bmp", "grass");
         try self.tileMap.?.addTile("assets/images/snake_head.bmp", "snake_head");
         try self.tileMap.?.addTile("assets/images/snake_body.bmp", "snake_body");
-        self.player = try Player.init(0,0);
+        self.player = try Player.init(100,100);
+
+        var i: usize = 0;
+        while(i < 100) : (i += 1) {
+            try self.player.?.growTail();
+        }
+
         self.isRunning = true;
 
         return self;
@@ -74,8 +81,8 @@ pub const Game = struct {
         c.SDL_RenderPresent(self.renderer);
     }
 
-    pub fn update(self: *Game) void {
-        self.player.?.update();
+    pub fn update(self: *Game) !void {
+        try self.player.?.update();
     }
 
     pub fn handleEvents(self: *Game) void {
@@ -173,7 +180,7 @@ pub const Player = struct {
         return self;
     }
 
-    pub fn update(self: *Player) void {
+    pub fn update(self: *Player) !void {
         self.parent.update();
         var speed_delta = @intToFloat(f64, self.speed) * self.parent.time_delta;
         self.next_node.?.speed_delta = speed_delta;
@@ -193,19 +200,21 @@ pub const Player = struct {
             if(self.parent.distanceTo(last_path.x, last_path.y) > speed_delta)
                 try self.next_node.?.addPath(PathPoint{.x = self.parent.x, .y = self.parent.y});
         } else {
-            if(self.parent.distanceTo(self.next_node.?.parent.x, self.next_node.?.parent.y) > speed_delta)
+            if(self.parent.distanceTo(self.next_node.?.parent.?.x, self.next_node.?.parent.?.y) > speed_delta)
                 try self.next_node.?.addPath(PathPoint{.x = self.parent.x, .y = self.parent.y});
         }
     }
 
-    pub fn growTail(self: *Player) void {
-        var node = TailNode {};
+    pub fn growTail(self: *Player) !void {
+        std.log.info("Growing tail", .{});
+        var node = try TailNode.init();
         if(self.next_node == null) {
-            node.addTo(self);
+            try node.addTo(self.parent);
             self.next_node = node;
         } else {
-            node.addTo(self.last_node);
-            self.last_node.next_node = node;
+            std.log.info("last: {}", .{self.last_node.?});
+            try node.addTo(self.last_node.?.parent.?);
+            self.last_node.?.next_node = node;
         }
         self.last_node = node;
     }
@@ -254,25 +263,44 @@ pub const TailNode = struct {
     speed_delta: f64 = 0,
     next_node: ?*TailNode,
     node_number: u32,
-    path: *std.TailQueue(*PathPoint),
+    path: std.TailQueue(PathPoint),
 
-    parent: *GameObject,
+    parent: ?*GameObject,
 
+    pub fn init() !*TailNode {
+        var self = try allocator.create(TailNode);
+        self.in_motion = false;
+        self.speed_delta = 0;
+        self.next_node = null;
+        self.node_number = 0;
+        self.path = std.mem.zeroes(std.TailQueue(PathPoint));
+        self.parent = null;
+        return self;
+    }
     pub fn addTo(self: *TailNode, parent: *GameObject) !void {
-        _ = self;
-        _ = parent;
+        std.log.info("{}", .{self});
+        var newTail = try GameObject.init("snake_body", parent.x, parent.y);
+        try parent.addChild(newTail);
+        newTail.x = parent.x;
+        newTail.y = parent.y;
+//        _ = self;
     }
 
     pub fn addPath(self: *TailNode, path_point: PathPoint) !void {
-        _ = self;
-        _ = path_point;
+        const list = std.TailQueue(PathPoint).Node;
+        var node = try allocator.create(list);
+        node.data = path_point;
+        if(self.path.len == 0) {
+            if(self.parent.?.distanceTo(path_point.x, path_point.y) > MAX_DIST)
+                self.path.append(node);
+        }
     }
 
     pub fn collidesWith(self: *TailNode, other: *GameObject, node_number: u32) bool {
         if(!self.in_motion)
             return false;
 
-        if(self.node_number > 10 and self.parent.distanceToObject(other) < 16)
+        if(self.node_number > 10 and self.parent.?.distanceToObject(other) < 16)
             return true;
 
         if(self.next_node != null)
