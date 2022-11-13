@@ -5,7 +5,7 @@ pub fn build(b: *std.build.Builder) void {
 
     const ecsPkg = std.build.Pkg{ .name = "coyote-ecs", .source = std.build.FileSource{ .path = "vendor/coyote-ecs/src/coyote.zig" }};
 
-    const exe = b.addExecutable("snake", "src/snake.zig");
+    const exe = b.addExecutable("snake", "src/coyote-snake.zig");
     exe.setBuildMode(mode);
     exe.linkLibC();
     //Linux paths
