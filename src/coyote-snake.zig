@@ -14,6 +14,7 @@ const allocator = std.heap.c_allocator;
 const SCREEN_WIDTH = 800;
 const SCREEN_HEIGHT = 600;
 const MAX_DIST = 4;
+const START_SIZE = 4;
 const TILE_WIDTH = 32;
 const TILE_HEIGHT = 32;
 
@@ -36,6 +37,7 @@ pub const Game = struct {
     world: *World,
     player: *Entity,
     tileMap: *Entity,
+    tails: std.ArrayList(*Entity),
 
     window: ?*c.SDL_Window,
     renderer: ?*c.SDL_Renderer,
@@ -72,6 +74,15 @@ pub const Game = struct {
 
         var playerTexture = try world.components.create(Components.Texture{});
         try self.player.attach(playerTexture, Components.Texture{.id = "snake_head", .path = "assets/images/snake_head.bmp"});
+
+        self.tails = std.ArrayList(*Entity).init(allocator);
+
+        var i: usize = 0;
+        while(i < START_SIZE) : (i += 1) {
+            var tail = try world.entities.create();
+            //try self.tails.append(tail);
+            _ = tail;
+        }
 
         self.isRunning = true;
 
@@ -119,6 +130,7 @@ pub const Components = struct {
     pub const Texture = struct {
         id: []const u8 = "",
         path: []const u8 = "",
+        resource: ?*c.SDL_Texture = null,
     };
 
     pub const Tile = struct {
@@ -155,7 +167,7 @@ pub fn Update(world: *World, game: *Game) !void {
     //Update tail entities
 }
 
-pub inline fn render(game: *Game, id: []const u8, x: c_int, y: c_int) !void {
+pub inline fn renderToTile(game: *Game, texture: ?*c.SDL_Texture, x: c_int, y: c_int) !void {
     var src_rect: c.SDL_Rect = undefined;
     var dest_rect: c.SDL_Rect = undefined;
 
@@ -169,7 +181,7 @@ pub inline fn render(game: *Game, id: []const u8, x: c_int, y: c_int) !void {
     dest_rect.w = TILE_WIDTH;
     dest_rect.h = TILE_HEIGHT;
 
-    if(c.SDL_RenderCopyEx(game.renderer, game.tiles.get(id).?, &src_rect, &dest_rect, 0, 0, c.SDL_FLIP_NONE) != 0) {
+    if(c.SDL_RenderCopyEx(game.renderer, texture, &src_rect, &dest_rect, 0, 0, c.SDL_FLIP_NONE) != 0) {
         c.SDL_Log("Unable to render copy: %s", c.SDL_GetError());
         return error.SDL_RenderCopyExFailed;
     }
