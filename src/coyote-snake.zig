@@ -69,21 +69,21 @@ pub const Game = struct {
         self.player = try world.entities.create();
         self.tileMap = try world.entities.create();
 
-        var playerPosition = try world.components.create(Components.Position{});
+        var playerPosition = try world.components.create(Components.Position);
         try self.player.attach(playerPosition, Components.Position{.x = 100, .y = 100});
 
-        var playerTexture = try world.components.create(Components.Texture{});
+        var playerTexture = try world.components.create(Components.Texture);
         try self.player.attach(playerTexture, Components.Texture{.id = "snake_head", .path = "assets/images/snake_head.bmp", .resource = try loadTexture(self, "assets/images/snake_head.bmp")});
 
         //One component, many entities
-        var tailTexture = try world.components.create(Components.Texture{});
+        var tailTexture = try world.components.create(Components.Texture);
         var tailResource = try loadTexture(self, "assets/images/snake_body.bmp");
 
         //Many entities, many components
         var i: usize = 0;
         while(i < START_SIZE) : (i += 1) {
             var tail = try world.entities.create();
-            var comp = try world.components.create(Components.Tail{});
+            var comp = try world.components.create(Components.Tail);
             try tail.attach(comp, Components.Tail{.x = 0.0, .y = 0.0});
             try tail.attach(tailTexture, Components.Texture{.id = "snake_body", .path = "assets/images/snake_body.bmp", .resource = tailResource});
             //std.log.info("setup tail: {*} id: {} comp id: {} comp type: {}", .{self.tails.items[i], self.tails.items[i].id, tailTexture.id, tailTexture.typeId.?});
@@ -177,7 +177,7 @@ pub fn Render(world: *World, game: *Game) !void {
     _ = c.SDL_SetRenderDrawColor(game.renderer, 255, 255, 255, 255);
     
     //Render tileMap
-    var it = world.components.iteratorFilter(Components.Tile{});
+    var it = world.components.iteratorFilter(Components.Tile);
     var i: usize = 0;
     while(it.next()) |component| : (i += 1) {
         var data = Cast(Components.Tile).get(component).?;
@@ -187,17 +187,17 @@ pub fn Render(world: *World, game: *Game) !void {
     var player = game.player;
 
     //Get one
-    var texture = Cast(Components.Texture).get(player.getByComponent(Components.Texture{}).?).?;
-    var position = Cast(Components.Position).get(player.getByComponent(Components.Position{}).?).?;
+    var texture = Cast(Components.Texture).get(player.getByComponent(Components.Texture).?).?;
+    var position = Cast(Components.Position).get(player.getByComponent(Components.Position).?).?;
 
     //Render Player
     try renderToTile(game, texture.resource, @floatToInt(c_int, @round(position.x)), @floatToInt(c_int, @round(position.y)));
 
     //Render Tails
-    var tails = world.entities.iteratorFilter(Components.Tail{});
+    var tails = world.entities.iteratorFilter(Components.Tail);
     while(tails.next()) |tail| {
-        var tailTexture = Cast(Components.Texture).get(tail.getByComponent(Components.Texture{}).?).?;
-        var tailPosition = Cast(Components.Tail).get(tail.getByComponent(Components.Tail{}).?).?;
+        var tailTexture = Cast(Components.Texture).get(tail.getByComponent(Components.Texture).?).?;
+        var tailPosition = Cast(Components.Tail).get(tail.getByComponent(Components.Tail).?).?;
         try renderToTile(game, tailTexture.resource, @floatToInt(c_int, @round(tailPosition.x)), @floatToInt(c_int, @round(tailPosition.y)));
     }
     c.SDL_RenderPresent(game.renderer);
@@ -212,7 +212,7 @@ pub fn Update(world: *World, game: *Game) !void {
 
 pub inline fn addTile(world: *World, id: []const u8, path: []const u8, texture: ?*c.SDL_Texture, x: c_int, y: c_int) !void {
     var tile = try world.entities.create();
-    var comp = try world.components.create(Components.Tile{});
+    var comp = try world.components.create(Components.Tile);
     try tile.attach(comp, Components.Tile{
         .x = x,
         .y = y,
