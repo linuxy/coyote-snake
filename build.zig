@@ -15,8 +15,6 @@ pub fn build(b: *std.build.Builder) void {
     exe.addIncludePath("/opt/homebrew/Cellar/sdl2/2.24.2/include");
     exe.addLibraryPath("/opt/homebrew/Cellar/sdl2/2.24.2/lib");
     exe.linkSystemLibrary("SDL2");
-    exe.addLibraryPath("vendor/coyote-ecs/vendor/mimalloc");
-    exe.linkSystemLibrary("mimalloc");
     exe.addPackage(ecsPkg);
     //exe.use_stage1 = true;
     exe.install();
