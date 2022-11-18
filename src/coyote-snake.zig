@@ -3,6 +3,7 @@ const ecs = @import("coyote-ecs");
 
 const c = @cImport({
     @cInclude("SDL2/SDL.h");
+    @cInclude("SDL2/SDL_image.h");
 });
 
 const World = ecs.World;
@@ -14,7 +15,7 @@ const allocator = std.heap.c_allocator;
 const SCREEN_WIDTH = 800;
 const SCREEN_HEIGHT = 600;
 const MAX_DIST = 4;
-const START_SIZE = 4;
+const START_SIZE = 20;
 const TILE_WIDTH = 32;
 const TILE_HEIGHT = 32;
 
@@ -40,6 +41,9 @@ pub const Game = struct {
 
     window: ?*c.SDL_Window,
     renderer: ?*c.SDL_Renderer,
+
+    path: std.ArrayList(@Vector(2, f64)) = undefined,
+    tails: u32,
 
     screenWidth: c_int,
     screenHeight: c_int,
@@ -73,32 +77,34 @@ pub const Game = struct {
         try self.player.attach(playerPosition, Components.Position{.x = 100, .y = 100});
 
         var playerTexture = try world.components.create(Components.Texture);
-        try self.player.attach(playerTexture, Components.Texture{.id = "snake_head", .path = "assets/images/snake_head.bmp", .resource = try loadTexture(self, "assets/images/snake_head.bmp")});
+        try self.player.attach(playerTexture, Components.Texture{.id = "snake_head", .path = "assets/images/snake_head.png", .resource = try loadTexture(self, "assets/images/snake_head.png")});
 
         //One component, many entities
         var tailTexture = try world.components.create(Components.Texture);
-        var tailResource = try loadTexture(self, "assets/images/snake_body.bmp");
+        var tailResource = try loadTexture(self, "assets/images/snake_body.png");
 
         //Many entities, many components
         var i: usize = 0;
         while(i < START_SIZE) : (i += 1) {
             var tail = try world.entities.create();
-            //std.log.info("Created tail: {}", .{tail.id});
             var component = try world.components.create(Components.Tail);
             var position = try world.components.create(Components.Position);
             try tail.attach(component, Components.Tail{});
-            try tail.attach(tailTexture, Components.Texture{.id = "snake_body", .path = "assets/images/snake_body.bmp", .resource = tailResource});
-            try tail.attach(position, Components.Position{});
-            //std.log.info("setup tail: {*} id: {} comp id: {} comp type: {}", .{tail, tail.id, tailTexture.id, tailTexture.typeId.?});
+            try tail.attach(tailTexture, Components.Texture{.id = "snake_body", .path = "assets/images/snake_body.png", .resource = tailResource});
+            try tail.attach(position, Components.Position{.x = 100, .y = 100});
         }
+        self.tails = @intCast(u32, i); //Tail count
+
+        //Initialize path
+        self.path = std.ArrayList(@Vector(2, f64)).init(allocator);
 
         //Create tiles
         var cur_x: c_int = 0;
         var cur_y: c_int = 0;
-        var grassResource = try loadTexture(self, "assets/images/grass.bmp");
+        var grassResource = try loadTexture(self, "assets/images/grass.png");
         while(cur_y < SCREEN_HEIGHT) : (cur_y += TILE_HEIGHT) {
             while(cur_x < SCREEN_WIDTH) : (cur_x += TILE_WIDTH) {
-                try addTile(world, "grass", "assets/images/grass.bmp", grassResource, cur_x, cur_y);
+                try addTile(world, "grass", "assets/images/grass.png", grassResource, cur_x, cur_y);
             }
             cur_x = 0;
         }
@@ -113,6 +119,19 @@ pub const Game = struct {
             switch (event.@"type") {
                 c.SDL_QUIT => {
                     self.isRunning = false;
+                },
+                c.SDL_KEYDOWN => {
+                    switch(event.key.keysym.sym) {
+                        c.SDLK_UP => setDirection(self, .U),
+                        c.SDLK_DOWN => setDirection(self, .D),
+                        c.SDLK_LEFT => setDirection(self, .L),
+                        c.SDLK_RIGHT => setDirection(self, .R),
+                        c.SDLK_w => setDirection(self, .U),
+                        c.SDLK_s => setDirection(self, .D),
+                        c.SDLK_a => setDirection(self, .L),
+                        c.SDLK_d => setDirection(self, .R),
+                        else => std.log.info("Unhandled key was pressed: {}", .{event.key.keysym.sym}),
+                    }
                 },
                 else => {},
             }
@@ -144,8 +163,8 @@ pub const Components = struct {
                        .delta = 0.0},
     };
 
+    //Empty attribute
     pub const Tail = struct {
-        path: std.ArrayList(@Vector(2, f64)) = std.ArrayList(@Vector(2, f64)).init(allocator),
     };
 
     pub const Texture = struct {
@@ -195,9 +214,6 @@ pub fn Render(world: *World, game: *Game) !void {
     var texture = Cast(Components.Texture, player.getOneComponent(Components.Texture));
     var position = Cast(Components.Position, player.getOneComponent(Components.Position));
 
-    //Render Player
-    try renderToTile(game, texture.resource, @floatToInt(c_int, @round(position.x)), @floatToInt(c_int, @round(position.y)));
-
     //Render Tails
     var tails = world.entities.iteratorFilter(Components.Tail);
     while(tails.next()) |tail| {
@@ -205,6 +221,10 @@ pub fn Render(world: *World, game: *Game) !void {
         var tailPosition = Cast(Components.Position, tail.getOneComponent(Components.Position));
         try renderToTile(game, tailTexture.resource, @floatToInt(c_int, @round(tailPosition.x)), @floatToInt(c_int, @round(tailPosition.y)));
     }
+
+    //Render Player
+    try renderToTile(game, texture.resource, @floatToInt(c_int, @round(position.x)), @floatToInt(c_int, @round(position.y)));
+
     c.SDL_RenderPresent(game.renderer);
 }
 
@@ -212,6 +232,7 @@ pub fn Update(world: *World, game: *Game) !void {
     //Update player entity
 
     try updateSpaceTime(world);
+    try updatePlayer(world, game);
     try updateTail(world, game);
 }
 
@@ -220,7 +241,6 @@ pub inline fn updateSpaceTime(world: *World) !void {
     var it = world.components.iteratorFilter(Components.Position);
     var i: u32 = 0;
 
-    var start = std.time.milliTimestamp();
     while(it.next()) |component| : (i += 1) {
         if(component.attached) {
             var position = Cast(Components.Position, component);
@@ -228,11 +248,8 @@ pub inline fn updateSpaceTime(world: *World) !void {
             var delta = @intToFloat(f64, c.SDL_GetTicks() - last_update) / 1000.0;
             var speed_delta = @intToFloat(f64, position.speed) * delta;
             try component.set(Components.Position, .{ .speed_delta = speed_delta, .time = .{.updated = c.SDL_GetTicks(), .delta = delta} });
-            std.log.info("ID: {}, Position: {}", .{component.id, position});
         }
     }
-
-    std.log.info("Updated {} Time components in {}ms.", .{i, std.time.milliTimestamp() - start});
 }
 
 pub inline fn updateSpeed(world: *World, game: *Game) !void {
@@ -242,41 +259,52 @@ pub inline fn updateSpeed(world: *World, game: *Game) !void {
     _ = world;
 }
 
+pub inline fn updatePlayer(world: *World, game: *Game) !void {
+    var player = game.player;
+    var position = Cast(Components.Position, player.getOneComponent(Components.Position));
+
+    switch(position.direction) {
+        .U => { position.y -= position.speed_delta; },
+        .D => { position.y += position.speed_delta; },
+        .L => { position.x -= position.speed_delta; },
+        .R => { position.x += position.speed_delta; },
+    }
+
+    if(position.y <= 0)
+        position.y = 0;
+
+    if(position.x <= 0)
+        position.x = 0;
+
+    if(position.x >= SCREEN_WIDTH - TILE_WIDTH)
+        position.x = SCREEN_WIDTH - TILE_WIDTH;
+
+    if(position.y >= SCREEN_HEIGHT - TILE_HEIGHT)
+        position.y = SCREEN_HEIGHT - TILE_HEIGHT;
+
+    try game.path.append(.{position.x, position.y});
+    _ = world;
+}
+
 pub inline fn updateTail(world: *World, game: *Game) !void {
 
     //Iterate through tails
-    //Append paths to follow head
-    var target = Cast(Components.Position, game.player.getOneComponent(Components.Position));
+    //Move along path
     var it = world.entities.iteratorFilter(Components.Tail);
     var i: u32 = 0;
     while(it.next()) |tail| : (i += 1) {
-        var component = Cast(Components.Tail, tail.getOneComponent(Components.Tail));
-        var position = Cast(Components.Position, tail.getOneComponent(Components.Position));
-        //Move towards other tails
-        std.log.info("Updating Tail component {*}", .{component});
-        if(distanceTo(position, target.x, target.y) > @intToFloat(f64, MAX_DIST * (i + 1))) {
-            var offset = @intToFloat(f64, MAX_DIST * i);
-            std.log.info("Queuing tail move, distance to head: {} > {}", .{distanceTo(position, target.x, target.y), offset});
-            try component.path.append(.{target.x - offset, target.y - offset});
-        }
-
-        if(component.path.items.len == 0)
-            return;
-
-        var target_path = component.path.items[0];
-        var distance = moveTowards(position, target_path);
-        if(distance > MAX_DIST)
-            distance = moveTowards(position, target_path);
-
-        if(distance < MAX_DIST) {
-            _ = component.path.pop();
-            if(component.path.items.len > 0) {
-                try component.path.append(.{target_path[0], target_path[1]});
-            } else {
-                _ = component.path.orderedRemove(0);
+        if(game.path.items.len > i) {
+            var target = game.path.items[i];
+            var position = Cast(Components.Position, tail.getOneComponent(Components.Position));
+            var distance = distanceTo(position, target[0], target[1]);
+            var offset = @intToFloat(f64, (i + 1) * MAX_DIST);
+            if(distance > offset) {
+                position.x = target[0];
+                position.y = target[1];
             }
         }
-        std.log.info("Tail #{} Moved towards {} : {} distance", .{tail.id, target_path, distance});
+        if(game.path.items.len > game.tails)
+            _ = game.path.orderedRemove(0);
     }
 }
 
@@ -315,25 +343,17 @@ pub inline fn renderToTile(game: *Game, texture: ?*c.SDL_Texture, x: c_int, y: c
 }
 
 pub inline fn loadTexture(game: *Game, path: []const u8) !?*c.SDL_Texture {
-    var tempSurface = c.SDL_LoadBMP(@ptrCast([*c]const u8, path)) orelse
+    var texture = c.IMG_LoadTexture(game.renderer, @ptrCast([*c]const u8, path)) orelse
     {
-        c.SDL_Log("Unable to load image: %s", c.SDL_GetError());
-        return error.SDL_IMG_LoadFailed;
+        c.SDL_Log("Unable load image: %s", c.SDL_GetError());
+        return error.SDL_LoadTextureFailed;
     };
-
-    var texture = c.SDL_CreateTextureFromSurface(game.renderer, tempSurface) orelse
-    {
-        c.SDL_Log("Unable to create surface: %s", c.SDL_GetError());
-        return error.SDL_CreateTextureFromSurfaceFailed;
-    };
-
-    c.SDL_FreeSurface(tempSurface);
 
     return texture;
 }
 
 pub inline fn distanceTo(self: *Components.Position, x: f64, y: f64) f64 {
-    return @sqrt(@exp2(x - self.x)) + @exp2((y - self.y));
+        return @sqrt(@exp2(@fabs(x - self.x))) + @exp2((@fabs(y - self.y)));
 }
 
 pub inline fn distanceToPosition(self: *Components.Position, other: *Components.Position) f64 {
@@ -359,4 +379,46 @@ pub fn moveTowards(self: *Components.Position, target: @Vector(2, f64)) f64 {
     }
     self.in_motion = true;
     return distanceTo(self, target[0], target[1]);
+}
+
+//Eliminate one-off instructions like these
+pub fn setDirection(self: *Game, new_direction: Direction) void {
+    var position = Cast(Components.Position, self.player.getOneComponent(Components.Position));
+    if(directionPependicularTo(position, new_direction)) {
+        position.direction = new_direction;
+    }
+}
+
+pub fn directionPependicularTo(position: *Components.Position, new_direction: Direction) bool {
+    switch(position.direction) {
+        .L => {
+            switch(new_direction) {
+                .U => { return true; },
+                .D => { return true; },
+                else => {},
+            }
+        },
+        .R => {
+            switch(new_direction) {
+                .U => { return true; },
+                .D => { return true; },
+                else => {},
+            }
+        },
+        .U => {
+            switch(new_direction) {
+                .L => { return true; },
+                .R => { return true; },
+                else => {},
+            }
+        },
+        .D => {
+            switch(new_direction) {
+                .L => { return true; },
+                .R => { return true; },
+                else => {},
+            }
+        },
+    }
+    return false;
 }
