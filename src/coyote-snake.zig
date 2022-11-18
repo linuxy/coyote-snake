@@ -14,7 +14,7 @@ const Systems = ecs.Systems;
 const allocator = std.heap.c_allocator;
 const SCREEN_WIDTH = 800;
 const SCREEN_HEIGHT = 600;
-const MAX_DIST = 4;
+const MAX_DIST = 8;
 const START_SIZE = 20;
 const TILE_WIDTH = 32;
 const TILE_HEIGHT = 32;
@@ -74,7 +74,7 @@ pub const Game = struct {
         self.tileMap = try world.entities.create();
 
         var playerPosition = try world.components.create(Components.Position);
-        try self.player.attach(playerPosition, Components.Position{.x = 100, .y = 100});
+        try self.player.attach(playerPosition, Components.Position{.x = 100, .y = 68});
 
         var playerTexture = try world.components.create(Components.Texture);
         try self.player.attach(playerTexture, Components.Texture{.id = "snake_head", .path = "assets/images/snake_head.png", .resource = try loadTexture(self, "assets/images/snake_head.png")});
@@ -296,12 +296,8 @@ pub inline fn updateTail(world: *World, game: *Game) !void {
         if(game.path.items.len > i) {
             var target = game.path.items[i];
             var position = Cast(Components.Position, tail.getOneComponent(Components.Position));
-            var distance = distanceTo(position, target[0], target[1]);
-            var offset = @intToFloat(f64, (i + 1) * MAX_DIST);
-            if(distance > offset) {
-                position.x = target[0];
-                position.y = target[1];
-            }
+            position.x = target[0];
+            position.y = target[1];
         }
         if(game.path.items.len > game.tails)
             _ = game.path.orderedRemove(0);
@@ -353,11 +349,11 @@ pub inline fn loadTexture(game: *Game, path: []const u8) !?*c.SDL_Texture {
 }
 
 pub inline fn distanceTo(self: *Components.Position, x: f64, y: f64) f64 {
-        return @sqrt(@exp2(@fabs(x - self.x))) + @exp2((@fabs(y - self.y)));
+    return @sqrt(@exp2(@fabs(x - self.x))) + @exp2((@fabs(y - self.y)));
 }
 
 pub inline fn distanceToPosition(self: *Components.Position, other: *Components.Position) f64 {
-    return self.distanceTo(other.x, other.y);
+    return distanceTo(self, other.x, other.y);
 }
 
 pub fn moveTowards(self: *Components.Position, target: @Vector(2, f64)) f64 {
@@ -381,7 +377,7 @@ pub fn moveTowards(self: *Components.Position, target: @Vector(2, f64)) f64 {
     return distanceTo(self, target[0], target[1]);
 }
 
-//Eliminate one-off instructions like these
+//Good DoD should minimize one-off instructions like this
 pub fn setDirection(self: *Game, new_direction: Direction) void {
     var position = Cast(Components.Position, self.player.getOneComponent(Components.Position));
     if(directionPependicularTo(position, new_direction)) {
