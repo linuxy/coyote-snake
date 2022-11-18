@@ -252,13 +252,6 @@ pub inline fn updateSpaceTime(world: *World) !void {
     }
 }
 
-pub inline fn updateSpeed(world: *World, game: *Game) !void {
-    var position = Cast(Components.Position, game.player.getOneComponent(Components.Position));
-    var time = Cast(Components.Time, game.player.getOneComponent(Components.Time));
-    position.speed_delta = @intToFloat(f64, position.speed) * time.delta;
-    _ = world;
-}
-
 pub inline fn updatePlayer(world: *World, game: *Game) !void {
     var player = game.player;
     var position = Cast(Components.Position, player.getOneComponent(Components.Position));
@@ -356,7 +349,7 @@ pub inline fn distanceToPosition(self: *Components.Position, other: *Components.
     return distanceTo(self, other.x, other.y);
 }
 
-pub fn moveTowards(self: *Components.Position, target: @Vector(2, f64)) f64 {
+pub inline fn moveTowards(self: *Components.Position, target: @Vector(2, f64)) f64 {
     if(self.speed_delta > MAX_DIST)
         self.speed_delta = MAX_DIST;
 
@@ -378,14 +371,14 @@ pub fn moveTowards(self: *Components.Position, target: @Vector(2, f64)) f64 {
 }
 
 //Good DoD should minimize one-off instructions like this
-pub fn setDirection(self: *Game, new_direction: Direction) void {
+pub inline fn setDirection(self: *Game, new_direction: Direction) void {
     var position = Cast(Components.Position, self.player.getOneComponent(Components.Position));
     if(directionPependicularTo(position, new_direction)) {
         position.direction = new_direction;
     }
 }
 
-pub fn directionPependicularTo(position: *Components.Position, new_direction: Direction) bool {
+pub inline fn directionPependicularTo(position: *Components.Position, new_direction: Direction) bool {
     switch(position.direction) {
         .L => {
             switch(new_direction) {
