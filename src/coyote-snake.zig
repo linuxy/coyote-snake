@@ -21,7 +21,7 @@ const TILE_HEIGHT = 32;
 
 pub fn main() !void {
     var world = try World.create();
-    defer world.deinit();
+    defer world.destroy();
 
     var game = try Game.init(world);
     defer game.deinit();
