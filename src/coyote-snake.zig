@@ -85,11 +85,11 @@ pub const Game = struct {
         try self.player.attach(playerPosition, Components.Position{.x = 100, .y = 68});
 
         var playerTexture = try world.components.create(Components.Texture);
-        try self.player.attach(playerTexture, Components.Texture{.id = "snake_head", .path = "assets/images/snake_head.png", .resource = try loadTexture(self, "assets/images/snake_head.png")});
+        try self.player.attach(playerTexture, Components.Texture{.id = "snake_head", .path = "/images/snake_head.png", .resource = try loadTexture(self, "/images/snake_head.png")});
 
         //One component, many entities
         var tailTexture = try world.components.create(Components.Texture);
-        var tailResource = try loadTexture(self, "assets/images/snake_body.png");
+        var tailResource = try loadTexture(self, "/images/snake_body.png");
 
         //Many entities, many components
         var i: usize = 0;
@@ -98,7 +98,7 @@ pub const Game = struct {
             var component = try world.components.create(Components.Tail);
             var position = try world.components.create(Components.Position);
             try tail.attach(component, Components.Tail{});
-            try tail.attach(tailTexture, Components.Texture{.id = "snake_body", .path = "assets/images/snake_body.png", .resource = tailResource});
+            try tail.attach(tailTexture, Components.Texture{.id = "snake_body", .path = "/images/snake_body.png", .resource = tailResource});
             try tail.attach(position, Components.Position{.x = 100, .y = 100});
         }
         self.tails = @intCast(u32, i); //Tail count
@@ -109,10 +109,10 @@ pub const Game = struct {
         //Create tiles
         var cur_x: c_int = 0;
         var cur_y: c_int = 0;
-        var grassResource = try loadTexture(self, "assets/images/grass.png");
+        var grassResource = try loadTexture(self, "/images/grass.png");
         while(cur_y < SCREEN_HEIGHT) : (cur_y += TILE_HEIGHT) {
             while(cur_x < SCREEN_WIDTH) : (cur_x += TILE_WIDTH) {
-                try addTile(world, "grass", "assets/images/grass.png", grassResource, cur_x, cur_y);
+                try addTile(world, "grass", "/images/grass.png", grassResource, cur_x, cur_y);
             }
             cur_x = 0;
         }
@@ -344,17 +344,19 @@ pub inline fn loadTexture(game: *Game, path: []const u8) !?*c.SDL_Texture {
     var buffer: [1024:0]u8 = std.mem.zeroes([1024:0]u8);
     var fd = try game.assets.open(@ptrCast([*]const u8, path));
 
-    var data: [:0]u8 = undefined;
+    var data: []u8 = &std.mem.zeroes([0:0]u8);
     var size: c_int = 0;
     while(true) {
         var sz = @intCast(c_int, try game.assets.read(fd, &buffer, 1024));
 
-        if(sz == 0)
+        if(sz < 1)
             break;
 
-        data = @ptrCast([:0]u8, try std.fmt.bufPrint(data, "{s}{s}", .{data, buffer}));
+        data = try std.mem.concat(allocator, u8,  &[_][]const u8{ data, &buffer });
         size += sz;
     }
+    defer allocator.free(data);
+
     var texture = c.IMG_LoadTexture_RW(game.renderer, c.SDL_RWFromMem(@ptrCast(?*anyopaque, data), size), 1) orelse
     {
         c.SDL_Log("Unable to load image: %s", c.SDL_GetError());
