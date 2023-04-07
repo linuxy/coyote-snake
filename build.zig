@@ -1,8 +1,17 @@
 const std = @import("std");
+const turnip = @import("vendor/turnip/build.zig");
 
-pub fn build(b: *std.build.Builder) void {
+pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+
+    turnip.squashFsTool(b, target, optimize);
+
+    if(b.option(bool, "game", "Build game") == true)
+        buildGame(b, target, optimize);
+}
+
+pub fn buildGame(b: *std.Build, target: std.zig.CrossTarget, optimize: std.builtin.OptimizeMode) void {
 
     const exe = b.addExecutable(.{
         .root_source_file = .{ .path = "src/coyote-snake.zig"},
@@ -25,6 +34,12 @@ pub fn build(b: *std.build.Builder) void {
     exe.addLibraryPath("/opt/homebrew/Cellar/sdl2/2.24.2/lib");
     exe.linkSystemLibrary("SDL2");
     exe.linkSystemLibrary("SDL2_image");
+
+    //Turnip
+    exe.addModule("turnip", turnip.module(b));
+    exe.main_pkg_path = ".";
+    turnip.squashLibrary(b, exe, target, optimize);
+
     exe.install();
 
     const run_cmd = exe.run();

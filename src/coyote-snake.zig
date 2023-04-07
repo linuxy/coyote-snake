@@ -1,5 +1,6 @@
 const std = @import("std");
 const ecs = @import("coyote-ecs");
+const Turnip = @import("turnip").Turnip;
 
 const c = @cImport({
     @cInclude("SDL2/SDL.h");
@@ -18,6 +19,8 @@ const MAX_DIST = 8;
 const START_SIZE = 20;
 const TILE_WIDTH = 32;
 const TILE_HEIGHT = 32;
+
+var embedded_assets = @embedFile("../zig-out/assets.squashfs");
 
 pub fn main() !void {
     var world = try World.create();
@@ -38,6 +41,7 @@ pub const Game = struct {
     world: *World,
     player: *Entity,
     tileMap: *Entity,
+    assets: Turnip,
 
     window: ?*c.SDL_Window,
     renderer: ?*c.SDL_Renderer,
@@ -68,6 +72,10 @@ pub const Game = struct {
             c.SDL_Log("Unable to create renderer: %s", c.SDL_GetError());
             return error.SDLInitializationFailed;
         };
+
+        //Initialize & load turnip assets
+        self.assets = Turnip.init();
+        try self.assets.loadImage(embedded_assets, 0);
 
         //One entity, many components
         self.player = try world.entities.create();
@@ -145,6 +153,7 @@ pub const Game = struct {
         c.SDL_QuitSubSystem(c.SDL_INIT_VIDEO);
         c.SDL_Quit();
         defer allocator.destroy(self);
+        defer self.assets.deinit();
         //Segfault for some reason on exit
     }
 };
@@ -332,11 +341,27 @@ pub inline fn renderToTile(game: *Game, texture: ?*c.SDL_Texture, x: c_int, y: c
 }
 
 pub inline fn loadTexture(game: *Game, path: []const u8) !?*c.SDL_Texture {
-    var texture = c.IMG_LoadTexture(game.renderer, @ptrCast([*c]const u8, path)) orelse
+    var buffer: [1024:0]u8 = std.mem.zeroes([1024:0]u8);
+    var fd = try game.assets.open(@ptrCast([*]const u8, path));
+
+    var data: [:0]u8 = undefined;
+    var size: c_int = 0;
+    while(true) {
+        var sz = @intCast(c_int, try game.assets.read(fd, &buffer, 1024));
+
+        if(sz == 0)
+            break;
+
+        data = @ptrCast([:0]u8, try std.fmt.bufPrint(data, "{s}{s}", .{data, buffer}));
+        size += sz;
+    }
+    var texture = c.IMG_LoadTexture_RW(game.renderer, c.SDL_RWFromMem(@ptrCast(?*anyopaque, data), size), 1) orelse
     {
-        c.SDL_Log("Unable load image: %s", c.SDL_GetError());
-        return error.SDL_LoadTextureFailed;
+        c.SDL_Log("Unable to load image: %s", c.SDL_GetError());
+        return error.SDL_LoadTexture_RWFailed;
     };
+
+    try game.assets.close(fd);
 
     return texture;
 }

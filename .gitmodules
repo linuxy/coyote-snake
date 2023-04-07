@@ -1,3 +1,6 @@
 [submodule "vendor/coyote-ecs"]
 	path = vendor/coyote-ecs
 	url = https://github.com/linuxy/coyote-ecs.git
+[submodule "vendor/turnip"]
+	path = vendor/turnip
+	url = git@github.com:linuxy/turnip.git
