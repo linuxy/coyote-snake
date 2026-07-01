@@ -4,16 +4,22 @@ const c = @import("sdl");
 
 const World = ecs.World;
 const Entity = ecs.Entity;
+const Component = ecs.Component;
 const Cast = ecs.Cast;
 const SystemContext = ecs.SystemContext;
 
 const allocator = std.heap.c_allocator;
 const SCREEN_WIDTH = 800;
 const SCREEN_HEIGHT = 600;
-const MAX_DIST = 8;
 const START_SIZE = 20;
 const TILE_WIDTH = 32;
 const TILE_HEIGHT = 32;
+const GRID_COLS = SCREEN_WIDTH / TILE_WIDTH;
+const GRID_ROWS = SCREEN_HEIGHT / TILE_HEIGHT;
+const MAX_APPLES = 5;
+const BASE_SPEED: u32 = 128;
+const SPEED_PER_APPLE: u32 = 12;
+const MAX_SPEED: u32 = 320;
 
 pub fn main() !void {
     var world = try World.create();
@@ -26,14 +32,14 @@ pub fn main() !void {
     defer sched.deinit();
 
     try sched.addSystem(0, Input);
-    try sched.addSystem(1, UpdateSpaceTime);
-    try sched.addSystem(1, UpdatePlayer);
-    try sched.addSystem(1, UpdateTail);
-    try sched.addSystem(2, Render);
+    try sched.addSystem(1, MoveSnake);
+    try sched.addSystem(1, EatApple);
+    try sched.addSystem(2, SpawnApple);
+    try sched.addSystem(3, Render);
 
     while (world.getResource(Game).?.isRunning) {
         try sched.run();
-        c.SDL_Delay(17);
+        c.SDL_Delay(1);
     }
 
     if (world.getResource(Game)) |g| g.deinit();
@@ -42,28 +48,30 @@ pub fn main() !void {
 
 pub const Game = struct {
     player: *Entity,
-    tileMap: *Entity,
 
     window: ?*c.SDL_Window,
     renderer: ?*c.SDL_Renderer,
 
-    path: std.ArrayList(@Vector(2, f64)) = .empty,
     tails: u32,
+    tailResource: ?*c.SDL_Texture,
+    appleResource: ?*c.SDL_Texture,
+    grassResource: ?*c.SDL_Texture,
+    rng: std.Random.DefaultPrng,
 
-    screenWidth: c_int,
-    screenHeight: c_int,
+    last_move_ms: u32,
     isRunning: bool,
 
     pub fn init(world: *World) !Game {
         var self: Game = .{
             .player = undefined,
-            .tileMap = undefined,
             .window = null,
             .renderer = null,
-            .path = .empty,
             .tails = 0,
-            .screenWidth = SCREEN_WIDTH,
-            .screenHeight = SCREEN_HEIGHT,
+            .tailResource = null,
+            .appleResource = null,
+            .grassResource = null,
+            .rng = undefined,
+            .last_move_ms = 0,
             .isRunning = false,
         };
 
@@ -72,6 +80,7 @@ pub const Game = struct {
             return error.SDLInitializationFailed;
         }
         errdefer c.SDL_Quit();
+        self.rng = std.Random.DefaultPrng.init(c.SDL_GetTicks());
 
         self.window = c.SDL_CreateWindow("Another Snake Game", c.SDL_WINDOWPOS_UNDEFINED, c.SDL_WINDOWPOS_UNDEFINED, SCREEN_WIDTH, SCREEN_HEIGHT, c.SDL_WINDOW_OPENGL) orelse {
             c.SDL_Log("Unable to create window: %s", c.SDL_GetError());
@@ -85,11 +94,14 @@ pub const Game = struct {
         };
         errdefer c.SDL_DestroyRenderer(self.renderer);
 
+        self.grassResource = try loadTexture(&self, "assets/images/grass.png");
+        self.tailResource = try loadTexture(&self, "assets/images/snake_body.png");
+        self.appleResource = try loadTexture(&self, "assets/images/apple.png");
+
         self.player = try world.entities.create();
-        self.tileMap = try world.entities.create();
 
         const playerPosition = try world.components.create(Components.Position);
-        try self.player.attach(playerPosition, Components.Position{ .x = 100, .y = 68 });
+        try self.player.attach(playerPosition, Components.Position{ .x = 96, .y = 64 });
 
         const playerTexture = try world.components.create(Components.Texture);
         try self.player.attach(playerTexture, Components.Texture{
@@ -99,40 +111,37 @@ pub const Game = struct {
         });
 
         const tailTexture = try world.components.create(Components.Texture);
-        const tailResource = try loadTexture(&self, "assets/images/snake_body.png");
 
         var i: usize = 0;
         while (i < START_SIZE) : (i += 1) {
             const tail = try world.entities.create();
             const component = try world.components.create(Components.Tail);
             const position = try world.components.create(Components.Position);
-            try tail.attach(component, Components.Tail{});
+            try tail.attach(component, Components.Tail{ .segment = @intCast(i) });
             try tail.attach(tailTexture, Components.Texture{
                 .id = "snake_body",
                 .path = "assets/images/snake_body.png",
-                .resource = tailResource,
+                .resource = self.tailResource,
             });
-            try tail.attach(position, Components.Position{ .x = 100, .y = 100 });
+            try tail.attach(position, Components.Position{
+                .x = 96 - @as(f64, @floatFromInt(@as(i32, @intCast(i + 1)) * TILE_WIDTH)),
+                .y = 64,
+            });
         }
         self.tails = @intCast(i);
-
-        var cur_x: c_int = 0;
-        var cur_y: c_int = 0;
-        const grassResource = try loadTexture(&self, "assets/images/grass.png");
-        while (cur_y < SCREEN_HEIGHT) : (cur_y += TILE_HEIGHT) {
-            while (cur_x < SCREEN_WIDTH) : (cur_x += TILE_WIDTH) {
-                try addTile(world, "grass", "assets/images/grass.png", grassResource, cur_x, cur_y);
-            }
-            cur_x = 0;
-        }
+        self.last_move_ms = c.SDL_GetTicks();
         self.isRunning = true;
+
+        var apple_i: u32 = 0;
+        while (apple_i < MAX_APPLES) : (apple_i += 1) {
+            try spawnAppleEntity(world, &self);
+        }
 
         return self;
     }
 
     pub fn deinit(self: *Game) void {
         self.isRunning = false;
-        if (self.path.capacity > 0) self.path.deinit(allocator);
         c.SDL_DestroyRenderer(self.renderer);
         c.SDL_DestroyWindow(self.window);
         c.SDL_QuitSubSystem(c.SDL_INIT_VIDEO);
@@ -144,7 +153,6 @@ fn getGame(ctx: *SystemContext) ?*Game {
     return ctx.resource(Game);
 }
 
-// Stage 0: poll SDL events and update input state.
 pub fn Input(ctx: *SystemContext) !void {
     const g = getGame(ctx) orelse return;
 
@@ -157,72 +165,129 @@ pub fn Input(ctx: *SystemContext) !void {
                 c.SDLK_DOWN, c.SDLK_s => setDirection(g, .D),
                 c.SDLK_LEFT, c.SDLK_a => setDirection(g, .L),
                 c.SDLK_RIGHT, c.SDLK_d => setDirection(g, .R),
-                else => std.log.info("Unhandled key was pressed: {}", .{event.key.keysym.sym}),
+                else => {},
             },
             else => {},
         }
     }
 }
 
-// Stage 1: advance frame timing for all positions.
-pub fn UpdateSpaceTime(ctx: *SystemContext) !void {
+fn moveIntervalMs(speed: u32) u32 {
+    return @max(40, 16000 / speed);
+}
+
+// Stage 1: move the snake one grid tile when its move timer elapses.
+pub fn MoveSnake(ctx: *SystemContext) !void {
+    const g = getGame(ctx) orelse return;
+    if (!g.isRunning) return;
+
     const world = ctx.world;
-    var it = world.components.iteratorFilter(Components.Position);
+    const head = g.player.get(Components.Position) orelse return;
+    const now = c.SDL_GetTicks();
 
-    while (it.next()) |component| {
-        if (!component.attached) continue;
+    if (now - g.last_move_ms < moveIntervalMs(head.speed)) return;
+    g.last_move_ms = now;
 
-        const position = Cast(Components.Position, component);
-        const last_update = position.time.updated;
-        const delta = @as(f64, @floatFromInt(c.SDL_GetTicks() - last_update)) / 1000.0;
-        const speed_delta = @as(f64, @floatFromInt(position.speed)) * delta;
-        try component.set(Components.Position, .{
-            .speed_delta = speed_delta,
-            .time = Time{ .updated = c.SDL_GetTicks(), .delta = delta },
+    var prev_x = head.x;
+    var prev_y = head.y;
+
+    switch (head.direction) {
+        .U => head.y -= TILE_HEIGHT,
+        .D => head.y += TILE_HEIGHT,
+        .L => head.x -= TILE_WIDTH,
+        .R => head.x += TILE_WIDTH,
+    }
+
+    if (headOutOfBounds(head.x, head.y)) {
+        g.isRunning = false;
+        std.log.info("Game over: hit the wall", .{});
+        return;
+    }
+
+    var seg: u32 = 0;
+    while (seg < g.tails) : (seg += 1) {
+        const tail = findTailBySegment(world, seg) orelse continue;
+        const pos = tail.get(Components.Position) orelse continue;
+        const next_x = prev_x;
+        const next_y = prev_y;
+        prev_x = pos.x;
+        prev_y = pos.y;
+        pos.x = next_x;
+        pos.y = next_y;
+    }
+}
+
+pub fn EatApple(ctx: *SystemContext) !void {
+    const g = getGame(ctx) orelse return;
+    if (!g.isRunning) return;
+
+    const world = ctx.world;
+    const head = g.player.get(Components.Position) orelse return;
+
+    var eaten_apple: ?*Entity = null;
+
+    var it = world.entities.iteratorFilter(Components.Apple);
+    while (it.next()) |apple| {
+        const pos = apple.get(Components.Position) orelse continue;
+        if (!positionsOverlap(head.x, head.y, pos.x, pos.y)) continue;
+        eaten_apple = apple;
+        break;
+    }
+
+    const apple = eaten_apple orelse return;
+    const tail_pos = lastTailPosition(world, head.x, head.y);
+
+    apple.destroy();
+
+    const tail = try world.entities.create();
+    const tail_marker = try world.components.create(Components.Tail);
+    const tail_position = try world.components.create(Components.Position);
+    const tail_texture = try world.components.create(Components.Texture);
+    try tail.attach(tail_marker, Components.Tail{ .segment = g.tails });
+    try tail.attach(tail_position, Components.Position{
+        .x = tail_pos.x,
+        .y = tail_pos.y,
+    });
+    try tail.attach(tail_texture, Components.Texture{
+        .id = "snake_body",
+        .path = "assets/images/snake_body.png",
+        .resource = g.tailResource,
+    });
+
+    g.tails += 1;
+    acceleratePlayer(g);
+}
+
+fn acceleratePlayer(g: *Game) void {
+    const position = g.player.get(Components.Position) orelse return;
+    position.speed = @min(position.speed + SPEED_PER_APPLE, MAX_SPEED);
+}
+
+pub fn SpawnApple(ctx: *SystemContext) !void {
+    const g = getGame(ctx) orelse return;
+    const world = ctx.world;
+
+    var apple_count: u32 = 0;
+    var it = world.entities.iteratorFilter(Components.Apple);
+    while (it.next()) |_| apple_count += 1;
+
+    while (apple_count < MAX_APPLES) {
+        const cell = randomOpenCell(g, world) orelse break;
+        const deferred = try ctx.commands.createEntity();
+        try ctx.commands.attachDeferred(deferred, Components.Apple{});
+        try ctx.commands.attachDeferred(deferred, Components.Position{
+            .x = cell.x,
+            .y = cell.y,
         });
+        try ctx.commands.attachDeferred(deferred, Components.Texture{
+            .id = "apple",
+            .path = "assets/images/apple.png",
+            .resource = g.appleResource,
+        });
+        apple_count += 1;
     }
 }
 
-// Stage 1: move the player and record its path for tail segments.
-pub fn UpdatePlayer(ctx: *SystemContext) !void {
-    const g = getGame(ctx) orelse return;
-    const position = g.player.get(Components.Position).?;
-
-    switch (position.direction) {
-        .U => position.y -= position.speed_delta,
-        .D => position.y += position.speed_delta,
-        .L => position.x -= position.speed_delta,
-        .R => position.x += position.speed_delta,
-    }
-
-    if (position.y <= 0) position.y = 0;
-    if (position.x <= 0) position.x = 0;
-    if (position.x >= SCREEN_WIDTH - TILE_WIDTH) position.x = SCREEN_WIDTH - TILE_WIDTH;
-    if (position.y >= SCREEN_HEIGHT - TILE_HEIGHT) position.y = SCREEN_HEIGHT - TILE_HEIGHT;
-
-    try g.path.append(allocator, .{ position.x, position.y });
-}
-
-// Stage 1: move tail segments along the recorded path.
-pub fn UpdateTail(ctx: *SystemContext) !void {
-    const g = getGame(ctx) orelse return;
-    const world = ctx.world;
-
-    var it = world.entities.iteratorFilter(Components.Tail);
-    var i: u32 = 0;
-    while (it.next()) |tail| : (i += 1) {
-        if (g.path.items.len > i) {
-            const target = g.path.items[i];
-            const position = tail.get(Components.Position).?;
-            position.x = target[0];
-            position.y = target[1];
-        }
-        if (g.path.items.len > g.tails)
-            _ = g.path.orderedRemove(0);
-    }
-}
-
-// Stage 2: draw tiles, tails, and the player.
 pub fn Render(ctx: *SystemContext) !void {
     const g = getGame(ctx) orelse return;
     const world = ctx.world;
@@ -230,33 +295,31 @@ pub fn Render(ctx: *SystemContext) !void {
     _ = c.SDL_RenderClear(g.renderer);
     _ = c.SDL_SetRenderDrawColor(g.renderer, 255, 255, 255, 255);
 
-    var it = world.components.iteratorFilter(Components.Tile);
-    while (it.next()) |component| {
-        const data = Cast(Components.Tile, component);
-        try renderToTile(g, data.texture.resource, data.x, data.y);
+    var y: c_int = 0;
+    while (y < SCREEN_HEIGHT) : (y += TILE_HEIGHT) {
+        var x: c_int = 0;
+        while (x < SCREEN_WIDTH) : (x += TILE_WIDTH) {
+            try renderToTile(g, g.grassResource, x, y);
+        }
     }
 
-    const texture = g.player.get(Components.Texture).?;
-    const position = g.player.get(Components.Position).?;
+    var apples = world.entities.iteratorFilter(Components.Apple);
+    while (apples.next()) |apple| {
+        const texture = apple.get(Components.Texture) orelse continue;
+        const position = apple.get(Components.Position) orelse continue;
+        try renderToTile(g, texture.resource, @intFromFloat(position.x), @intFromFloat(position.y));
+    }
 
     var tails = world.entities.iteratorFilter(Components.Tail);
     while (tails.next()) |tail| {
         const tailTexture = tail.get(Components.Texture).?;
         const tailPosition = tail.get(Components.Position).?;
-        try renderToTile(
-            g,
-            tailTexture.resource,
-            @as(c_int, @intFromFloat(@round(tailPosition.x))),
-            @as(c_int, @intFromFloat(@round(tailPosition.y))),
-        );
+        try renderToTile(g, tailTexture.resource, @intFromFloat(tailPosition.x), @intFromFloat(tailPosition.y));
     }
 
-    try renderToTile(
-        g,
-        texture.resource,
-        @as(c_int, @intFromFloat(@round(position.x))),
-        @as(c_int, @intFromFloat(@round(position.y))),
-    );
+    const texture = g.player.get(Components.Texture).?;
+    const position = g.player.get(Components.Position).?;
+    try renderToTile(g, texture.resource, @intFromFloat(position.x), @intFromFloat(position.y));
 
     c.SDL_RenderPresent(g.renderer);
 }
@@ -265,31 +328,20 @@ pub const Components = struct {
     pub const Position = struct {
         x: f64 = 0.0,
         y: f64 = 0.0,
-        in_motion: bool = false,
-        speed: u32 = 128,
-        speed_delta: f64 = 0.0,
-        direction: Direction = .D,
-        time: Time = .{ .updated = 0, .delta = 0.0 },
+        speed: u32 = BASE_SPEED,
+        direction: Direction = .R,
     };
 
-    pub const Tail = struct {};
+    pub const Tail = struct {
+        segment: u32 = 0,
+    };
+    pub const Apple = struct {};
 
     pub const Texture = struct {
         id: []const u8 = "",
         path: []const u8 = "",
         resource: ?*c.SDL_Texture = null,
     };
-
-    pub const Tile = struct {
-        x: c_int = 0,
-        y: c_int = 0,
-        texture: Texture = .{},
-    };
-};
-
-pub const Time = struct {
-    updated: u32 = 0,
-    delta: f64 = 0.0,
 };
 
 pub const Direction = enum {
@@ -299,17 +351,114 @@ pub const Direction = enum {
     R,
 };
 
-fn addTile(world: *World, id: []const u8, path: []const u8, texture: ?*c.SDL_Texture, x: c_int, y: c_int) !void {
-    const tile = try world.entities.create();
-    const comp = try world.components.create(Components.Tile);
-    try tile.attach(comp, Components.Tile{
-        .x = x,
-        .y = y,
-        .texture = Components.Texture{
-            .id = id,
-            .path = path,
-            .resource = texture,
-        },
+const GridCell = struct { col: c_int, row: c_int };
+const GridPoint = struct { x: f64, y: f64 };
+
+fn gridCellFromPixels(x: f64, y: f64) GridCell {
+    return .{
+        .col = @divFloor(@as(c_int, @intFromFloat(x)), TILE_WIDTH),
+        .row = @divFloor(@as(c_int, @intFromFloat(y)), TILE_HEIGHT),
+    };
+}
+
+fn pixelsFromGridCell(cell: GridCell) GridPoint {
+    return .{
+        .x = @as(f64, @floatFromInt(cell.col * TILE_WIDTH)),
+        .y = @as(f64, @floatFromInt(cell.row * TILE_HEIGHT)),
+    };
+}
+
+fn cellsEqual(a: GridCell, b: GridCell) bool {
+    return a.col == b.col and a.row == b.row;
+}
+
+fn headOutOfBounds(x: f64, y: f64) bool {
+    return x < 0 or y < 0 or
+        x + @as(f64, @floatFromInt(TILE_WIDTH)) > SCREEN_WIDTH or
+        y + @as(f64, @floatFromInt(TILE_HEIGHT)) > SCREEN_HEIGHT;
+}
+
+fn positionsOverlap(ax: f64, ay: f64, bx: f64, by: f64) bool {
+    return gridCellFromPixels(ax, ay).col == gridCellFromPixels(bx, by).col and
+        gridCellFromPixels(ax, ay).row == gridCellFromPixels(bx, by).row;
+}
+
+fn findTailBySegment(world: *World, segment: u32) ?*Entity {
+    var it = world.entities.iteratorFilter(Components.Tail);
+    while (it.next()) |tail| {
+        if (tail.get(Components.Tail)) |data| {
+            if (data.segment == segment) return tail;
+        }
+    }
+    return null;
+}
+
+fn lastTailPosition(world: *World, head_x: f64, head_y: f64) struct { x: f64, y: f64 } {
+    var last_x = head_x;
+    var last_y = head_y;
+    var last_segment: u32 = 0;
+
+    var tails = world.entities.iteratorFilter(Components.Tail);
+    while (tails.next()) |tail| {
+        if (tail.get(Components.Tail)) |data| {
+            if (tail.get(Components.Position)) |pos| {
+                if (data.segment >= last_segment) {
+                    last_segment = data.segment;
+                    last_x = pos.x;
+                    last_y = pos.y;
+                }
+            }
+        }
+    }
+    return .{ .x = last_x, .y = last_y };
+}
+
+fn isCellOccupied(g: *Game, world: *World, cell: GridCell) bool {
+    if (g.player.get(Components.Position)) |pos| {
+        if (cellsEqual(gridCellFromPixels(pos.x, pos.y), cell)) return true;
+    }
+
+    var tails = world.entities.iteratorFilter(Components.Tail);
+    while (tails.next()) |tail| {
+        if (tail.get(Components.Position)) |pos| {
+            if (cellsEqual(gridCellFromPixels(pos.x, pos.y), cell)) return true;
+        }
+    }
+
+    var apples = world.entities.iteratorFilter(Components.Apple);
+    while (apples.next()) |apple| {
+        if (apple.get(Components.Position)) |pos| {
+            if (cellsEqual(gridCellFromPixels(pos.x, pos.y), cell)) return true;
+        }
+    }
+
+    return false;
+}
+
+fn randomOpenCell(g: *Game, world: *World) ?GridPoint {
+    var attempts: u32 = 0;
+    while (attempts < 200) : (attempts += 1) {
+        const cell = GridCell{
+            .col = @intCast(g.rng.random().intRangeAtMost(u32, 0, GRID_COLS - 1)),
+            .row = @intCast(g.rng.random().intRangeAtMost(u32, 0, GRID_ROWS - 1)),
+        };
+        if (!isCellOccupied(g, world, cell)) return pixelsFromGridCell(cell);
+    }
+    return null;
+}
+
+fn spawnAppleEntity(world: *World, g: *Game) !void {
+    const cell = randomOpenCell(g, world) orelse return;
+    const apple = try world.entities.create();
+    const marker = try world.components.create(Components.Apple);
+    const position = try world.components.create(Components.Position);
+    const texture = try world.components.create(Components.Texture);
+    try apple.attach(marker, Components.Apple{});
+    try apple.attach(position, Components.Position{ .x = cell.x, .y = cell.y });
+    try apple.attach(texture, Components.Texture{
+        .id = "apple",
+        .path = "assets/images/apple.png",
+        .resource = g.appleResource,
     });
 }
 
