@@ -1,0 +1,7 @@
+.{
+    .name = .coyote_snake,
+    .minimum_zig_version = "0.17.0",
+    .version = "0.1.0",
+    .fingerprint = 0xf5b020c76e1d91c9,
+    .paths = .{""},
+}
