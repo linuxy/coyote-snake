@@ -5,7 +5,7 @@ const c = @import("sdl");
 const World = ecs.World;
 const Entity = ecs.Entity;
 const Cast = ecs.Cast;
-const Systems = ecs.Systems;
+const SystemContext = ecs.SystemContext;
 
 const allocator = std.heap.c_allocator;
 const SCREEN_WIDTH = 800;
@@ -19,19 +19,28 @@ pub fn main() !void {
     var world = try World.create();
     defer world.destroy();
 
-    var game = try Game.init(world);
-    defer game.deinit();
+    const initial_game = try Game.init(world);
+    try world.insertResource(Game, initial_game);
 
-    while(game.isRunning) {
-        game.handleEvents();
-        try Systems.run(Update, .{world, game});
-        try Systems.run(Render, .{world, game});
+    var sched = world.scheduler();
+    defer sched.deinit();
+
+    try sched.addSystem(0, Input);
+    try sched.addSystem(1, UpdateSpaceTime);
+    try sched.addSystem(1, UpdatePlayer);
+    try sched.addSystem(1, UpdateTail);
+    try sched.addSystem(2, Render);
+
+    while (world.getResource(Game).?.isRunning) {
+        try sched.run();
         c.SDL_Delay(17);
     }
+
+    if (world.getResource(Game)) |g| g.deinit();
+    world.removeResource(Game);
 }
 
 pub const Game = struct {
-    world: *World,
     player: *Entity,
     tileMap: *Entity,
 
@@ -44,13 +53,9 @@ pub const Game = struct {
     screenWidth: c_int,
     screenHeight: c_int,
     isRunning: bool,
-    
-    pub fn init(world: *World) !*Game {
-        const self = try allocator.create(Game);
-        errdefer allocator.destroy(self);
 
-        self.* = .{
-            .world = world,
+    pub fn init(world: *World) !Game {
+        var self: Game = .{
             .player = undefined,
             .tileMap = undefined,
             .window = null,
@@ -66,50 +71,56 @@ pub const Game = struct {
             c.SDL_Log("Unable to initialize SDL: %s", c.SDL_GetError());
             return error.SDLInitializationFailed;
         }
+        errdefer c.SDL_Quit();
 
-        self.window = c.SDL_CreateWindow("Another Snake Game", c.SDL_WINDOWPOS_UNDEFINED, c.SDL_WINDOWPOS_UNDEFINED, SCREEN_WIDTH, SCREEN_HEIGHT, c.SDL_WINDOW_OPENGL) orelse
-        {
+        self.window = c.SDL_CreateWindow("Another Snake Game", c.SDL_WINDOWPOS_UNDEFINED, c.SDL_WINDOWPOS_UNDEFINED, SCREEN_WIDTH, SCREEN_HEIGHT, c.SDL_WINDOW_OPENGL) orelse {
             c.SDL_Log("Unable to create window: %s", c.SDL_GetError());
             return error.SDLInitializationFailed;
         };
+        errdefer c.SDL_DestroyWindow(self.window);
 
         self.renderer = c.SDL_CreateRenderer(self.window, -1, 0) orelse {
             c.SDL_Log("Unable to create renderer: %s", c.SDL_GetError());
             return error.SDLInitializationFailed;
         };
+        errdefer c.SDL_DestroyRenderer(self.renderer);
 
-        //One entity, many components
         self.player = try world.entities.create();
         self.tileMap = try world.entities.create();
 
         const playerPosition = try world.components.create(Components.Position);
-        try self.player.attach(playerPosition, Components.Position{.x = 100, .y = 68});
+        try self.player.attach(playerPosition, Components.Position{ .x = 100, .y = 68 });
 
         const playerTexture = try world.components.create(Components.Texture);
-        try self.player.attach(playerTexture, Components.Texture{.id = "snake_head", .path = "assets/images/snake_head.png", .resource = try loadTexture(self, "assets/images/snake_head.png")});
+        try self.player.attach(playerTexture, Components.Texture{
+            .id = "snake_head",
+            .path = "assets/images/snake_head.png",
+            .resource = try loadTexture(&self, "assets/images/snake_head.png"),
+        });
 
-        //One component, many entities
         const tailTexture = try world.components.create(Components.Texture);
-        const tailResource = try loadTexture(self, "assets/images/snake_body.png");
+        const tailResource = try loadTexture(&self, "assets/images/snake_body.png");
 
-        //Many entities, many components
         var i: usize = 0;
-        while(i < START_SIZE) : (i += 1) {
+        while (i < START_SIZE) : (i += 1) {
             const tail = try world.entities.create();
             const component = try world.components.create(Components.Tail);
             const position = try world.components.create(Components.Position);
             try tail.attach(component, Components.Tail{});
-            try tail.attach(tailTexture, Components.Texture{.id = "snake_body", .path = "assets/images/snake_body.png", .resource = tailResource});
-            try tail.attach(position, Components.Position{.x = 100, .y = 100});
+            try tail.attach(tailTexture, Components.Texture{
+                .id = "snake_body",
+                .path = "assets/images/snake_body.png",
+                .resource = tailResource,
+            });
+            try tail.attach(position, Components.Position{ .x = 100, .y = 100 });
         }
         self.tails = @intCast(i);
 
-        //Create tiles
         var cur_x: c_int = 0;
         var cur_y: c_int = 0;
-        const grassResource = try loadTexture(self, "assets/images/grass.png");
-        while(cur_y < SCREEN_HEIGHT) : (cur_y += TILE_HEIGHT) {
-            while(cur_x < SCREEN_WIDTH) : (cur_x += TILE_WIDTH) {
+        const grassResource = try loadTexture(&self, "assets/images/grass.png");
+        while (cur_y < SCREEN_HEIGHT) : (cur_y += TILE_HEIGHT) {
+            while (cur_x < SCREEN_WIDTH) : (cur_x += TILE_WIDTH) {
                 try addTile(world, "grass", "assets/images/grass.png", grassResource, cur_x, cur_y);
             }
             cur_x = 0;
@@ -119,31 +130,6 @@ pub const Game = struct {
         return self;
     }
 
-    pub fn handleEvents(self: *Game) void {
-        var event: c.SDL_Event = undefined;
-        while (c.SDL_PollEvent(&event) != 0) {
-            switch (event.@"type") {
-                c.SDL_QUIT => {
-                    self.isRunning = false;
-                },
-                c.SDL_KEYDOWN => {
-                    switch(event.key.keysym.sym) {
-                        c.SDLK_UP => setDirection(self, .U),
-                        c.SDLK_DOWN => setDirection(self, .D),
-                        c.SDLK_LEFT => setDirection(self, .L),
-                        c.SDLK_RIGHT => setDirection(self, .R),
-                        c.SDLK_w => setDirection(self, .U),
-                        c.SDLK_s => setDirection(self, .D),
-                        c.SDLK_a => setDirection(self, .L),
-                        c.SDLK_d => setDirection(self, .R),
-                        else => std.log.info("Unhandled key was pressed: {}", .{event.key.keysym.sym}),
-                    }
-                },
-                else => {},
-            }
-        }
-    }
-
     pub fn deinit(self: *Game) void {
         self.isRunning = false;
         if (self.path.capacity > 0) self.path.deinit(allocator);
@@ -151,13 +137,131 @@ pub const Game = struct {
         c.SDL_DestroyWindow(self.window);
         c.SDL_QuitSubSystem(c.SDL_INIT_VIDEO);
         c.SDL_Quit();
-        allocator.destroy(self);
     }
 };
 
-//Components
-pub const Components = struct {
+fn getGame(ctx: *SystemContext) ?*Game {
+    return ctx.resource(Game);
+}
 
+// Stage 0: poll SDL events and update input state.
+pub fn Input(ctx: *SystemContext) !void {
+    const g = getGame(ctx) orelse return;
+
+    var event: c.SDL_Event = undefined;
+    while (c.SDL_PollEvent(&event) != 0) {
+        switch (event.@"type") {
+            c.SDL_QUIT => g.isRunning = false,
+            c.SDL_KEYDOWN => switch (event.key.keysym.sym) {
+                c.SDLK_UP, c.SDLK_w => setDirection(g, .U),
+                c.SDLK_DOWN, c.SDLK_s => setDirection(g, .D),
+                c.SDLK_LEFT, c.SDLK_a => setDirection(g, .L),
+                c.SDLK_RIGHT, c.SDLK_d => setDirection(g, .R),
+                else => std.log.info("Unhandled key was pressed: {}", .{event.key.keysym.sym}),
+            },
+            else => {},
+        }
+    }
+}
+
+// Stage 1: advance frame timing for all positions.
+pub fn UpdateSpaceTime(ctx: *SystemContext) !void {
+    const world = ctx.world;
+    var it = world.components.iteratorFilter(Components.Position);
+
+    while (it.next()) |component| {
+        if (!component.attached) continue;
+
+        const position = Cast(Components.Position, component);
+        const last_update = position.time.updated;
+        const delta = @as(f64, @floatFromInt(c.SDL_GetTicks() - last_update)) / 1000.0;
+        const speed_delta = @as(f64, @floatFromInt(position.speed)) * delta;
+        try component.set(Components.Position, .{
+            .speed_delta = speed_delta,
+            .time = Time{ .updated = c.SDL_GetTicks(), .delta = delta },
+        });
+    }
+}
+
+// Stage 1: move the player and record its path for tail segments.
+pub fn UpdatePlayer(ctx: *SystemContext) !void {
+    const g = getGame(ctx) orelse return;
+    const position = g.player.get(Components.Position).?;
+
+    switch (position.direction) {
+        .U => position.y -= position.speed_delta,
+        .D => position.y += position.speed_delta,
+        .L => position.x -= position.speed_delta,
+        .R => position.x += position.speed_delta,
+    }
+
+    if (position.y <= 0) position.y = 0;
+    if (position.x <= 0) position.x = 0;
+    if (position.x >= SCREEN_WIDTH - TILE_WIDTH) position.x = SCREEN_WIDTH - TILE_WIDTH;
+    if (position.y >= SCREEN_HEIGHT - TILE_HEIGHT) position.y = SCREEN_HEIGHT - TILE_HEIGHT;
+
+    try g.path.append(allocator, .{ position.x, position.y });
+}
+
+// Stage 1: move tail segments along the recorded path.
+pub fn UpdateTail(ctx: *SystemContext) !void {
+    const g = getGame(ctx) orelse return;
+    const world = ctx.world;
+
+    var it = world.entities.iteratorFilter(Components.Tail);
+    var i: u32 = 0;
+    while (it.next()) |tail| : (i += 1) {
+        if (g.path.items.len > i) {
+            const target = g.path.items[i];
+            const position = tail.get(Components.Position).?;
+            position.x = target[0];
+            position.y = target[1];
+        }
+        if (g.path.items.len > g.tails)
+            _ = g.path.orderedRemove(0);
+    }
+}
+
+// Stage 2: draw tiles, tails, and the player.
+pub fn Render(ctx: *SystemContext) !void {
+    const g = getGame(ctx) orelse return;
+    const world = ctx.world;
+
+    _ = c.SDL_RenderClear(g.renderer);
+    _ = c.SDL_SetRenderDrawColor(g.renderer, 255, 255, 255, 255);
+
+    var it = world.components.iteratorFilter(Components.Tile);
+    while (it.next()) |component| {
+        const data = Cast(Components.Tile, component);
+        try renderToTile(g, data.texture.resource, data.x, data.y);
+    }
+
+    const texture = g.player.get(Components.Texture).?;
+    const position = g.player.get(Components.Position).?;
+
+    var tails = world.entities.iteratorFilter(Components.Tail);
+    while (tails.next()) |tail| {
+        const tailTexture = tail.get(Components.Texture).?;
+        const tailPosition = tail.get(Components.Position).?;
+        try renderToTile(
+            g,
+            tailTexture.resource,
+            @as(c_int, @intFromFloat(@round(tailPosition.x))),
+            @as(c_int, @intFromFloat(@round(tailPosition.y))),
+        );
+    }
+
+    try renderToTile(
+        g,
+        texture.resource,
+        @as(c_int, @intFromFloat(@round(position.x))),
+        @as(c_int, @intFromFloat(@round(position.y))),
+    );
+
+    c.SDL_RenderPresent(g.renderer);
+}
+
+pub const Components = struct {
     pub const Position = struct {
         x: f64 = 0.0,
         y: f64 = 0.0,
@@ -165,13 +269,10 @@ pub const Components = struct {
         speed: u32 = 128,
         speed_delta: f64 = 0.0,
         direction: Direction = .D,
-        time: Time = .{.updated = 0,
-                       .delta = 0.0},
+        time: Time = .{ .updated = 0, .delta = 0.0 },
     };
 
-    //Empty attribute
-    pub const Tail = struct {
-    };
+    pub const Tail = struct {};
 
     pub const Texture = struct {
         id: []const u8 = "",
@@ -179,13 +280,11 @@ pub const Components = struct {
         resource: ?*c.SDL_Texture = null,
     };
 
-    //Composition
     pub const Tile = struct {
         x: c_int = 0,
         y: c_int = 0,
-        texture: Texture = Texture{},
+        texture: Texture = .{},
     };
-
 };
 
 pub const Time = struct {
@@ -197,113 +296,10 @@ pub const Direction = enum {
     U,
     D,
     L,
-    R
+    R,
 };
 
-//Systems
-pub fn Render(world: *World, game: *Game) !void {
-
-    _ = c.SDL_RenderClear(game.renderer);
-    _ = c.SDL_SetRenderDrawColor(game.renderer, 255, 255, 255, 255);
-    
-    //Render tileMap
-    var it = world.components.iteratorFilter(Components.Tile);
-    var i: usize = 0;
-    while(it.next()) |component| : (i += 1) {
-        const data = Cast(Components.Tile, component);
-        try renderToTile(game, data.texture.resource, data.x, data.y);
-    }
-
-    var player = game.player;
-
-    const texture = player.get(Components.Texture).?;
-    const position = player.get(Components.Position).?;
-
-    //Render Tails
-    var tails = world.entities.iteratorFilter(Components.Tail);
-    while (tails.next()) |tail| {
-        const tailTexture = tail.get(Components.Texture).?;
-        const tailPosition = tail.get(Components.Position).?;
-        try renderToTile(game, tailTexture.resource, @as(c_int, @intFromFloat(@round(tailPosition.x))), @as(c_int, @intFromFloat(@round(tailPosition.y))));
-    }
-
-    //Render Player
-    try renderToTile(game, texture.resource, @as(c_int, @intFromFloat(@round(position.x))), @as(c_int, @intFromFloat(@round(position.y))));
-
-    c.SDL_RenderPresent(game.renderer);
-}
-
-pub fn Update(world: *World, game: *Game) !void {
-    //Update player entity
-
-    try updateSpaceTime(world);
-    try updatePlayer(world, game);
-    try updateTail(world, game);
-}
-
-//Prefer component iterators to entity
-pub inline fn updateSpaceTime(world: *World) !void {
-    var it = world.components.iteratorFilter(Components.Position);
-    var i: u32 = 0;
-
-    while(it.next()) |component| : (i += 1) {
-        if(component.attached) {
-            const position = Cast(Components.Position, component);
-            const last_update = position.time.updated;
-            const delta = @as(f64, @floatFromInt(c.SDL_GetTicks() - last_update)) / 1000.0;
-            const speed_delta = @as(f64, @floatFromInt(position.speed)) * delta;
-            try component.set(Components.Position, .{
-                .speed_delta = speed_delta,
-                .time = Time{ .updated = c.SDL_GetTicks(), .delta = delta },
-            });
-        }
-    }
-}
-
-pub inline fn updatePlayer(_: *World, game: *Game) !void {
-    const position = game.player.get(Components.Position).?;
-
-    switch(position.direction) {
-        .U => { position.y -= position.speed_delta; },
-        .D => { position.y += position.speed_delta; },
-        .L => { position.x -= position.speed_delta; },
-        .R => { position.x += position.speed_delta; },
-    }
-
-    if(position.y <= 0)
-        position.y = 0;
-
-    if(position.x <= 0)
-        position.x = 0;
-
-    if(position.x >= SCREEN_WIDTH - TILE_WIDTH)
-        position.x = SCREEN_WIDTH - TILE_WIDTH;
-
-    if(position.y >= SCREEN_HEIGHT - TILE_HEIGHT)
-        position.y = SCREEN_HEIGHT - TILE_HEIGHT;
-
-    try game.path.append(allocator, .{position.x, position.y});
-}
-
-pub inline fn updateTail(world: *World, game: *Game) !void {
-
-    //Iterate through tails
-    //Move along path
-    var it = world.entities.iteratorFilter(Components.Tail);
-    var i: u32 = 0;
-    while(it.next()) |tail| : (i += 1) {
-        if (game.path.items.len > i) {
-            const target = game.path.items[i];
-            const position = tail.get(Components.Position).?;
-            position.x = target[0];
-            position.y = target[1];
-        }
-        if(game.path.items.len > game.tails)
-            _ = game.path.orderedRemove(0);
-    }
-}
-
-pub inline fn addTile(world: *World, id: []const u8, path: []const u8, texture: ?*c.SDL_Texture, x: c_int, y: c_int) !void {
+fn addTile(world: *World, id: []const u8, path: []const u8, texture: ?*c.SDL_Texture, x: c_int, y: c_int) !void {
     const tile = try world.entities.create();
     const comp = try world.components.create(Components.Tile);
     try tile.attach(comp, Components.Tile{
@@ -317,7 +313,7 @@ pub inline fn addTile(world: *World, id: []const u8, path: []const u8, texture: 
     });
 }
 
-pub inline fn renderToTile(game: *Game, texture: ?*c.SDL_Texture, x: c_int, y: c_int) !void {
+fn renderToTile(g: *Game, texture: ?*c.SDL_Texture, x: c_int, y: c_int) !void {
     var src_rect: c.SDL_Rect = undefined;
     var dest_rect: c.SDL_Rect = undefined;
 
@@ -331,89 +327,36 @@ pub inline fn renderToTile(game: *Game, texture: ?*c.SDL_Texture, x: c_int, y: c
     dest_rect.w = TILE_WIDTH;
     dest_rect.h = TILE_HEIGHT;
 
-    if (c.SDL_RenderCopyEx(game.renderer, texture, &src_rect, &dest_rect, 0, null, c.SDL_FLIP_NONE) != 0) {
+    if (c.SDL_RenderCopyEx(g.renderer, texture, &src_rect, &dest_rect, 0, null, c.SDL_FLIP_NONE) != 0) {
         c.SDL_Log("Unable to render copy: %s", c.SDL_GetError());
         return error.SDL_RenderCopyExFailed;
     }
 }
 
-pub inline fn loadTexture(game: *Game, path: [*:0]const u8) !?*c.SDL_Texture {
-    const texture = c.IMG_LoadTexture(game.renderer, path) orelse
-    {
+fn loadTexture(g: *Game, path: [*:0]const u8) !?*c.SDL_Texture {
+    const texture = c.IMG_LoadTexture(g.renderer, path) orelse {
         c.SDL_Log("Unable load image: %s", c.SDL_GetError());
         return error.SDL_LoadTextureFailed;
     };
-
     return texture;
 }
 
-pub inline fn distanceTo(self: *Components.Position, x: f64, y: f64) f64 {
-    return @sqrt(@exp2(@abs(x - self.x))) + @exp2(@abs(y - self.y));
-}
-
-pub inline fn distanceToPosition(self: *Components.Position, other: *Components.Position) f64 {
-    return distanceTo(self, other.x, other.y);
-}
-
-pub inline fn moveTowards(self: *Components.Position, target: @Vector(2, f64)) f64 {
-    if(self.speed_delta > MAX_DIST)
-        self.speed_delta = MAX_DIST;
-
-    if(distanceTo(self, target[0], target[1]) > self.speed_delta) {
-        if(self.x < target[0])
-            self.x += self.speed_delta;
-
-        if(self.x > target[0])
-            self.x -= self.speed_delta;
-
-        if(self.y < target[1])
-            self.y += self.speed_delta;
-
-        if(self.y > target[1])
-            self.y -= self.speed_delta;
-    }
-    self.in_motion = true;
-    return distanceTo(self, target[0], target[1]);
-}
-
-//Good DoD should minimize one-off instructions like this
-pub inline fn setDirection(self: *Game, new_direction: Direction) void {
-    const position = self.player.get(Components.Position).?;
-    if(directionPependicularTo(position, new_direction)) {
+fn setDirection(g: *Game, new_direction: Direction) void {
+    const position = g.player.get(Components.Position).?;
+    if (directionPependicularTo(position, new_direction)) {
         position.direction = new_direction;
     }
 }
 
-pub inline fn directionPependicularTo(position: *Components.Position, new_direction: Direction) bool {
-    switch(position.direction) {
-        .L => {
-            switch(new_direction) {
-                .U => { return true; },
-                .D => { return true; },
-                else => {},
-            }
+fn directionPependicularTo(position: *Components.Position, new_direction: Direction) bool {
+    return switch (position.direction) {
+        .L, .R => switch (new_direction) {
+            .U, .D => true,
+            else => false,
         },
-        .R => {
-            switch(new_direction) {
-                .U => { return true; },
-                .D => { return true; },
-                else => {},
-            }
+        .U, .D => switch (new_direction) {
+            .L, .R => true,
+            else => false,
         },
-        .U => {
-            switch(new_direction) {
-                .L => { return true; },
-                .R => { return true; },
-                else => {},
-            }
-        },
-        .D => {
-            switch(new_direction) {
-                .L => { return true; },
-                .R => { return true; },
-                else => {},
-            }
-        },
-    }
-    return false;
+    };
 }
